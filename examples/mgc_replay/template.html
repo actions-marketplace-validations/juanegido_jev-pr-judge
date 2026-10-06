@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MGC Offline Replay</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#0b111c;color:#e5ecf7}body{max-width:1180px;margin:32px auto;padding:0 20px}h1{margin-bottom:6px}p{color:#aebcd0}strong{color:#ffd18a}section{background:#121d2d;border:1px solid #29394f;border-radius:12px;padding:18px;margin:16px 0}.controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap}button,select{padding:8px 14px;background:#285eb4;color:white;border:0;border-radius:6px}input{flex:1;min-width:140px}canvas{width:100%;height:210px;display:block}.stats{display:flex;gap:35px;flex-wrap:wrap}.stats span{display:block;font-size:24px;color:#78d4c0}table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:9px;border-bottom:1px solid #29394f}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.scroll{overflow:auto}small{color:#aebcd0}
+</style>
+<h1>MGC / Offline Replay</h1><p id="source"></p>
+<p><strong>SIMULATED · Deterministic baseline · No Jev calls · No orders</strong></p>
+<section class="controls"><button id="play">Play</button><button id="reset">Reset</button><label>Speed <select id="speed"><option value="700">1×</option><option value="175">4×</option><option value="45">16×</option></select></label><label for="scrub">Replay position</label><input id="scrub" type="range" min="0" value="0"><output id="time"></output></section>
+<section><h2>Close price · USD / oz</h2><canvas id="price" aria-label="Replayed close price chart" role="img"></canvas><small>Only revealed bars shown. This is a close-price line, not an intrabar execution path.</small></section>
+<section><h2>Account equity · USD</h2><canvas id="equity" aria-label="Replayed account equity chart" role="img"></canvas><small>Open positions marked at close; entry fees included. Future exit costs are not reserved.</small></section>
+<section class="stats"><div>Equity<span id="balance"></span></div><div>Realized net P&amp;L<span id="pnl"></span></div><div>Closed trades<span id="count"></span></div><div>Position<span id="position"></span></div><div>Max drawdown to cursor<span id="drawdown"></span></div></section>
+<section><h2>Closed simulated trades</h2><div class="scroll"><table><thead><tr><th>Side</th><th>Entry (UTC)</th><th>Exit (UTC)</th><th>Entry / exit</th><th>Exit reason</th><th>Net USD</th></tr></thead><tbody id="trades"></tbody></table></div></section>
+<details><summary>Simulation metadata and whole-window range (contains full replay information)</summary><p>Whole-window range is hindsight price excursion, NOT captured profit. Synthetic patterns do not establish predictive performance.</p><pre id="metadata"></pre></details>
+<script>
+'use strict';
+const data = __REPLAY_DATA__;
+const el = id => document.getElementById(id);
+const money = value => value.toLocaleString('en-US',{style:'currency',currency:'USD'});
+let cursor = 0, timer = null;
+el('source').textContent = data.metadata.source + ' · ' + data.metadata.instrument;
+el('metadata').textContent = JSON.stringify(data.metadata,null,2);
+el('scrub').max = data.frames.length-1;
+function chart(id,key,color){
+  const canvas=el(id), ratio=window.devicePixelRatio||1;
+  const w=canvas.clientWidth,h=canvas.clientHeight;
+  canvas.width=w*ratio;canvas.height=h*ratio;
+  const ctx=canvas.getContext('2d');ctx.scale(ratio,ratio);
+  const values=data.frames.slice(0,cursor+1).map(f=>f[key]);
+  let lo=Math.min(...values),hi=Math.max(...values);
+  const pad=Math.max((hi-lo)*0.1,key==='price'?0.1:1);lo-=pad;hi+=pad;
+  ctx.font='12px system-ui';ctx.fillStyle='#aebcd0';ctx.strokeStyle='#29394f';
+  for(let i=0;i<4;i++){
+    const y=15+i*(h-35)/3;
+    ctx.beginPath();ctx.moveTo(70,y);ctx.lineTo(w,y);ctx.stroke();
+    ctx.fillText((hi-i*(hi-lo)/3).toFixed(2),0,y+4);
+  }
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
+  values.forEach((v,i)=>{const x=70+i*(w-75)/Math.max(1,values.length-1),y=15+(hi-v)*(h-35)/(hi-lo);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();
+}
+function render(){
+  const frame=data.frames[cursor],closed=data.trades.filter(t=>t.exit_index<=cursor);
+  el('scrub').value=cursor;el('time').textContent=frame.timestamp;
+  el('balance').textContent=money(frame.equity);
+  el('pnl').textContent=money(closed.reduce((sum,t)=>sum+t.net,0));
+  el('count').textContent=closed.length;el('position').textContent=['SHORT','FLAT','LONG'][frame.position+1];
+  let peak=10000,dd=0;data.frames.slice(0,cursor+1).forEach(f=>{peak=Math.max(peak,f.equity);dd=Math.max(dd,peak-f.equity);});
+  el('drawdown').textContent=money(dd);
+  el('trades').replaceChildren();
+  closed.forEach(t=>{
+    const row=document.createElement('tr');
+    [t.side===1?'LONG':'SHORT',data.frames[t.entry_index].timestamp,data.frames[t.exit_index].timestamp,(t.entry/10).toFixed(1)+' / '+(t.exit/10).toFixed(1),t.reason,money(t.net)].forEach(value=>{const cell=document.createElement('td');cell.textContent=value;row.append(cell);});el('trades').append(row);
+  });
+  chart('price','price','#79b4ff');chart('equity','equity','#78d4c0');
+}
+function pause(){clearInterval(timer);timer=null;el('play').textContent='Play';}
+function play(){if(cursor===data.frames.length-1)cursor=0;el('play').textContent='Pause';timer=setInterval(()=>{cursor++;render();if(cursor===data.frames.length-1)pause();},Number(el('speed').value));}
+el('play').onclick=()=>timer?pause():play();
+el('reset').onclick=()=>{pause();cursor=0;render();};
+el('speed').onchange=()=>{if(timer){pause();play();}};
+el('scrub').oninput=event=>{pause();cursor=Number(event.target.value);render();};
+window.addEventListener('resize',render);render();
+</script></html>
